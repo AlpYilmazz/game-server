@@ -4,4 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytepack = { path = "../bytepack" }
+bytepack-proc-macro = { path = "../bytepack/bytepack-proc-macro" }
+
 tokio = { version = "1", features = ["full"] }
