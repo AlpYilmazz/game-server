@@ -10,11 +10,12 @@ use std::{
 use bytepack::{
     base::{ByteSize, ConstByteSize},
     pack::BytePack,
+    unpack::ByteUnpack,
 };
 use bytepack_proc_macro::{BytePack, ByteSize, ByteUnpack, ConstByteSize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, tcp::OwnedWriteHalf},
+    net::{tcp::OwnedWriteHalf, TcpListener, UdpSocket},
 };
 
 enum PlayerId {
@@ -59,87 +60,81 @@ struct ServerMessage {
     pub command: PlayerCommand,
 }
 
+#[derive(ConstByteSize, ByteSize, BytePack, ByteUnpack)]
+struct PlayerInput {
+    pub buttons: u8,
+    pub move_stick_x: u8,
+    pub move_stick_y: u8,
+}
+
+#[derive(ConstByteSize, ByteSize, BytePack, ByteUnpack)]
+struct InputPacket {
+    pub buttons: u32, // 4
+    pub num_inputs: u8, // 1
+    pub inputs: [PlayerInput; 3], // 9
+}
+
 #[tokio::main]
 async fn main() {
     let sessions: HashMap<String, Session> = HashMap::new();
     let total_connections = Arc::new(AtomicU8::new(0));
 
-    let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
+    // let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
+    let sock = Arc::new(UdpSocket::bind("127.0.0.1:8080").await.unwrap());
     loop {
-        let (socket, addr) = listener.accept().await.unwrap();
-        let (mut read_socket, mut write_socket) = socket.into_split();
-        total_connections.fetch_add(1, Ordering::AcqRel);
-        println!("New Connection");
-
-        let total_connections = Arc::clone(&total_connections);
+        let mut buffer = vec![0; 1024];
+        
+        let (bytes_read, addr) = sock.recv_from(&mut buffer).await.unwrap();
+        
+        println!("Received");
+        
+        let packet_buf = buffer[..bytes_read].as_ref().to_vec();
+        let sock = Arc::clone(&sock);
         tokio::spawn(async move {
-            let mut buffer = vec![0; 1024];
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    
-                let server_msg = ServerMessage {
-                    player_id: 1,
-                    frame_number: now % 50,
-                    command: PlayerCommand {
-                        key: 0,
-                        action: KEY_ACTION_PRESS,
-                    },
-                };
-    
-                server_msg.pack(&mut buffer).unwrap();
-                println!("sending: {:?}", &buffer[..server_msg.byte_size()]);
-    
-                let Ok(_) = write_socket.write_all(&buffer[..server_msg.byte_size()]).await else {
-                    println!("Connection Closed");
-                    total_connections.fetch_sub(1, Ordering::AcqRel);
-                    return;
-                };
-            }
+            let packet_buf = packet_buf;
+
+            // 2-7 frame delay
+            let delay = (rand::random::<u64>() % 10) + 50;
+            tokio::time::sleep(std::time::Duration::from_millis((delay as f32 * 16.6) as u64)).await;
+
+            let Ok(_) = sock.send_to(&packet_buf, addr).await else {
+                println!("Connection Closed [write]");
+                return;
+            };
+            
+            println!("Sent, [delay: {delay}]");
         });
+        
+        // let (socket, addr) = listener.accept().await.unwrap();
+        // let (mut read_socket, mut write_socket) = socket.into_split();
+        // total_connections.fetch_add(1, Ordering::AcqRel);
+        // println!("New Connection");
+
+        // let total_connections = Arc::clone(&total_connections);
         // tokio::spawn(async move {
         //     let mut buffer = vec![0; 1024];
         //     loop {
-        //         // TODO: fix msg_len is u8 -> max len is 256
-        //         let mut msg_len = 0;
-        //         loop {
-        //             let mut header: [u8; 3] = [0, 0, 0];
-        //             let Ok(_) = read_socket.read_exact(&mut header).await else {
-        //                 println!("Connection Closed");
-        //                 total_connections.fetch_sub(1, Ordering::AcqRel);
-        //                 return;
-        //             };
+        //         let packet_buf = &mut buffer[..InputPacket::const_byte_size()];
 
-        //             if header[0] == 0x25 && header[1] == 0x25 {
-        //                 msg_len = header[2] as usize;
-        //                 break;
-        //             }
-        //         };
-
-        //         let response_msg = {
-        //             let msg_buf = &mut buffer[..msg_len];
-        //             read_socket.read_exact(msg_buf).await.unwrap();
-
-        //             let msg = String::from_utf8(msg_buf.to_vec()).unwrap();
-        //             println!("Received msg: {}", &msg);
-
-        //             let total_conn = total_connections.load(Ordering::Acquire);
-        //             format!("[Total Connections: {total_conn}] Echo: {msg}")
-        //         };
-
-        //         buffer[0] = 0x25;
-        //         buffer[1] = 0x25;
-        //         buffer[2] = response_msg.len() as u8;
-        //         response_msg.bytes().enumerate().for_each(|(i, byte)| buffer[3 + i] = byte);
-
-        //         let response_msg_len = response_msg.len() + 3;
-        //         let response_msg_buf = &buffer[..response_msg_len];
-        //         let Ok(_) = write_socket.write_all(response_msg_buf).await else {
-        //             println!("Connection Closed");
+        //         let Ok(_) = read_socket.read_exact(packet_buf).await else {
+        //             println!("Connection Closed [read]");
         //             total_connections.fetch_sub(1, Ordering::AcqRel);
         //             return;
         //         };
+
+        //         println!("Received");
+
+        //         // 2-7 frame delay
+        //         let delay = (rand::random::<u64>() % 5) + 2;
+        //         tokio::time::sleep(std::time::Duration::from_millis((delay as f32 * 16.6) as u64)).await;
+
+        //         let Ok(_) = write_socket.write_all(packet_buf).await else {
+        //             println!("Connection Closed [write]");
+        //             total_connections.fetch_sub(1, Ordering::AcqRel);
+        //             return;
+        //         };
+
+        //         println!("Sent, [delay: {delay}]");
         //     }
         // });
     }
